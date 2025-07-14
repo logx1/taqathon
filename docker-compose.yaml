@@ -1,0 +1,158 @@
+services:
+
+  db:
+    image: postgres:14
+    container_name: postgres-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -p 5432 -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s 
+    env_file:
+      - .env
+    networks:
+      - app
+
+  front-end:
+    build:
+      context: ./front-end
+      dockerfile: Dockerfile
+    container_name: frontend-app
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./front-end:/app
+      - frontend_node_modules:/app/node_modules
+    networks:
+      - app
+
+  back-end:
+    build:
+      context: ./back-end
+      dockerfile: Dockerfile
+    container_name: backend-app
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # - back-end:/app
+      - ./back-end:/app
+    ports:
+      - "8000:8000"
+    networks:
+      - app
+    env_file:
+      - .env
+
+  adminer:
+    image: adminer:4.8.1
+    container_name: adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+    networks:
+      - app
+  
+  prometheus:
+    image: prom/prometheus:v2.37.9
+    container_name: prometheus
+    ports:
+      - 9090:9090
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yaml'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:9090/-/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - app
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    env_file: .env
+    environment:
+    - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+    - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    ports:
+      - '3000:3000'
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/dashboard:/var/lib/grafana/dashboards
+      - ./monitoring/provisioning:/etc/grafana/provisioning
+    restart: unless-stopped 
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - app
+
+  node_exporter:
+    image: quay.io/prometheus/node-exporter:v1.5.0
+    container_name: node_exporter
+    command: '--path.rootfs=/host'
+    pid: host
+    restart: unless-stopped
+    volumes:
+      - /:/host:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:9100"] 
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - app
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    container_name: cadvisor
+    ports:
+      - "8098:8080"
+    command:
+      - '-port=8080'
+    volumes:
+      - /:/rootfs:ro // need permission !!
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    restart: unless-stopped
+    networks:
+      - app
+
+volumes:
+  db_data:
+  back-end:
+  frontend_node_modules:
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+networks:
+  app:
+  bridge:
+    driver: app
